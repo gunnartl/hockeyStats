@@ -1,5 +1,5 @@
 // Offline support. Bump VERSION when you change any file so phones pick up the update.
-const VERSION = "hockeystats-v2";
+const VERSION = "hockeystats-v3";
 const FILES = [
   "./",
   "index.html",

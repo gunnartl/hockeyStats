@@ -38,8 +38,9 @@
   .muted { color: var(--muted); }
   .hidden { display: none !important; }
   label { display: block; margin: 14px 0 6px; color: var(--muted); font-size: 15px; }
-  input { width: 100%; font: inherit; padding: 14px; border-radius: var(--radius); border: 1px solid var(--card2);
+  input, textarea { width: 100%; font: inherit; padding: 14px; border-radius: var(--radius); border: 1px solid var(--card2);
     background: var(--card); color: var(--text); }
+  textarea { min-height: 110px; resize: vertical; line-height: 1.4; }
   .topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 
   /* Match list */
@@ -97,9 +98,9 @@
   <input id="inOpp" autocomplete="off" placeholder="e.g. Furuset">
   <div class="row">
     <div><label for="inPeriods">Periods</label><input id="inPeriods" type="number" inputmode="numeric" min="1" max="9" value="3"></div>
-    <div><label for="inMinutes">Minutes each</label><input id="inMinutes" type="number" inputmode="numeric" min="1" max="90" value="20"></div>
+    <div><label for="inMinutes">Minutes each</label><input id="inMinutes" type="number" inputmode="numeric" min="1" max="90" value="15"></div>
   </div>
-  <button class="primary full" id="btnStart" style="margin-top:20px">Start match</button>
+  <button class="primary full" id="btnCreate" style="margin-top:20px">Create match</button>
 </section>
 
 <!-- LIVE / DETAIL -->
@@ -112,6 +113,11 @@
     <div><div class="num" id="sUs">0</div><div class="team" id="nUs"></div></div>
     <div class="dash">–</div>
     <div><div class="num" id="sThem">0</div><div class="team" id="nThem"></div></div>
+  </div>
+
+  <div id="readyControls">
+    <p class="muted" style="text-align:center" id="readyInfo"></p>
+    <button class="primary full" id="btnStart" style="padding:22px;font-size:20px">▶ Start match</button>
   </div>
 
   <div id="liveControls">
@@ -132,7 +138,11 @@
 
   <h2>Goals</h2>
   <div class="card"><ul class="log" id="goalLog"></ul></div>
-  <button class="danger full hidden" id="btnDelete">Delete this match</button>
+
+  <h2><label for="inNote" style="margin:0;color:inherit;font-size:inherit">Notes</label></h2>
+  <textarea id="inNote" placeholder="Anything worth remembering about this match…"></textarea>
+
+  <button class="danger full hidden" id="btnDelete" style="margin-top:24px">Delete this match</button>
 </section>
 
 <div class="toast" id="toast"></div>
@@ -163,6 +173,7 @@ function periodMs(m) { return Math.min(periodLen(m), m.clock.acc + (m.clock.runn
 function matchMs(m) { return m.periodDurations.reduce((a, b) => a + b, 0) + periodMs(m); }
 const score = (m, team) => m.goals.filter((g) => g.team === team).length;
 const periodName = (m, p) => "P" + p;
+const when = (m) => m.startedAt || m.createdAt; // not-yet-started matches use the creation time
 
 // ---------- navigation ----------
 let current = null; // match being viewed
@@ -179,13 +190,13 @@ document.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click"
 function renderHome() {
   const list = $("matchList");
   list.innerHTML = "";
-  const ms = [...db.matches].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  const ms = [...db.matches].sort((a, b) => when(b).localeCompare(when(a)));
   if (!ms.length) list.innerHTML = '<p class="muted">No matches yet.</p>';
   for (const m of ms) {
     const el = document.createElement("div");
     el.className = "card match";
-    el.innerHTML = `<div><div><b></b>${m.status === "live" ? '<span class="badge">LIVE</span>' : ""}</div>
-      <div class="muted">${localDate(m.startedAt)} · ${localTime(m.startedAt).slice(0, 5)}</div></div>
+    el.innerHTML = `<div><div><b></b>${m.status === "live" ? '<span class="badge">LIVE</span>' : m.status === "ready" ? '<span class="badge">NOT STARTED</span>' : ""}</div>
+      <div class="muted">${localDate(when(m))} · ${m.startedAt ? localTime(m.startedAt).slice(0, 5) : "—"}</div></div>
       <div class="score">${score(m, "us")} – ${score(m, "them")}</div>`;
     el.querySelector("b").textContent = "vs " + m.opponent;
     el.addEventListener("click", () => openMatch(m.id));
@@ -203,7 +214,7 @@ $("btnNew").addEventListener("click", () => {
   $("inOpp").focus();
 });
 
-$("btnStart").addEventListener("click", () => {
+$("btnCreate").addEventListener("click", () => {
   const opponent = $("inOpp").value.trim();
   if (!opponent) { $("inOpp").focus(); toast("Enter the opposing team"); return; }
   const ourTeam = $("inOurs").value.trim() || "Us";
@@ -212,14 +223,16 @@ $("btnStart").addEventListener("click", () => {
   const m = {
     id: String(now),
     ourTeam, opponent,
-    startedAt: new Date(now).toISOString(),
+    createdAt: new Date(now).toISOString(),
+    startedAt: null,              // set when "Start match" is pressed
     endedAt: null,
     periods: Math.max(1, parseInt($("inPeriods").value, 10) || 3),
-    periodMinutes: Math.max(1, parseInt($("inMinutes").value, 10) || 20),
-    status: "live",
+    periodMinutes: Math.max(1, parseInt($("inMinutes").value, 10) || 15),
+    status: "ready",              // ready -> live -> done
+    note: "",
     period: 1,
     periodDurations: [],          // finished periods' lengths in ms
-    clock: { acc: 0, runningSince: now },
+    clock: { acc: 0, runningSince: null },
     between: false,               // true between "End period" and "Start next period"
     goals: [],
   };
@@ -239,13 +252,16 @@ function openMatch(id) {
 
 function renderMatch() {
   const m = current;
-  $("mDate").textContent = localDate(m.startedAt) + " " + localTime(m.startedAt).slice(0, 5);
+  $("mDate").textContent = localDate(when(m)) + (m.startedAt ? " " + localTime(m.startedAt).slice(0, 5) : "");
+  if (document.activeElement !== $("inNote")) $("inNote").value = m.note || "";
   $("nUs").textContent = $("gUsName").textContent = m.ourTeam;
   $("nThem").textContent = $("gThemName").textContent = m.opponent;
   $("sUs").textContent = score(m, "us");
   $("sThem").textContent = score(m, "them");
   const live = m.status === "live";
   $("liveControls").classList.toggle("hidden", !live);
+  $("readyControls").classList.toggle("hidden", m.status !== "ready");
+  $("readyInfo").textContent = `${m.periods} × ${m.periodMinutes} min`;
   $("btnDelete").classList.toggle("hidden", live);
   if (live) {
     const lastPeriod = m.period >= m.periods;
@@ -333,6 +349,18 @@ $("btnPeriod").addEventListener("click", () => {
   save(); renderMatch();
 });
 
+$("btnStart").addEventListener("click", () => {
+  const m = current;
+  const now = Date.now();
+  m.startedAt = new Date(now).toISOString();
+  m.status = "live";
+  m.clock = { acc: 0, runningSince: now };
+  save();
+  openMatch(m.id);
+});
+
+$("inNote").addEventListener("input", () => { current.note = $("inNote").value; save(); });
+
 $("btnEnd").addEventListener("click", () => {
   if (confirm("End the match now?")) endMatch(current, true);
 });
@@ -356,16 +384,16 @@ $("btnDelete").addEventListener("click", () => {
 function csvCell(v) { v = v == null ? "" : String(v); return /[",\n;]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
 function buildCsv() {
   const head = ["match_id", "date", "start_time", "our_team", "opponent", "status",
-    "goal_no", "team", "period", "period_time", "clock_remaining", "match_time", "score_us", "score_them"];
+    "goal_no", "team", "period", "period_time", "clock_remaining", "match_time", "score_us", "score_them", "note"];
   const rows = [head];
-  const ms = [...db.matches].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  const ms = [...db.matches].sort((a, b) => when(a).localeCompare(when(b)));
   for (const m of ms) {
-    const base = [m.id, localDate(m.startedAt), localTime(m.startedAt), m.ourTeam, m.opponent, m.status];
-    if (!m.goals.length) rows.push([...base, "", "", "", "", "", "", 0, 0]);
+    const base = [m.id, localDate(when(m)), m.startedAt ? localTime(m.startedAt) : "", m.ourTeam, m.opponent, m.status];
+    if (!m.goals.length) rows.push([...base, "", "", "", "", "", "", 0, 0, m.note]);
     let us = 0, them = 0;
     m.goals.forEach((g, i) => {
       g.team === "us" ? us++ : them++;
-      rows.push([...base, i + 1, g.team === "us" ? m.ourTeam : m.opponent, g.period, fmt(g.periodMs), fmt(Math.ceil((m.periodMinutes * 60000 - g.periodMs) / 1000) * 1000), fmt(g.matchMs), us, them]);
+      rows.push([...base, i + 1, g.team === "us" ? m.ourTeam : m.opponent, g.period, fmt(g.periodMs), fmt(Math.ceil((m.periodMinutes * 60000 - g.periodMs) / 1000) * 1000), fmt(g.matchMs), us, them, m.note]);
     });
   }
   return rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
