@@ -142,7 +142,8 @@
   <h2><label for="inNote" style="margin:0;color:inherit;font-size:inherit">Notes</label></h2>
   <textarea id="inNote" placeholder="Anything worth remembering about this match…"></textarea>
 
-  <button class="danger full hidden" id="btnDelete" style="margin-top:24px">Delete this match</button>
+  <button class="primary full" id="btnSaveExit" style="margin-top:24px">✓ Save and exit</button>
+  <button class="danger full hidden" id="btnDelete" style="margin-top:32px">Delete this match</button>
 </section>
 
 <div class="toast" id="toast"></div>
@@ -358,6 +359,9 @@ $("btnStart").addEventListener("click", () => {
   save();
   openMatch(m.id);
 });
+
+// Everything is already saved as you go; this button is just a clear way back to the list.
+$("btnSaveExit").addEventListener("click", () => { save(); toast("Saved"); show("home"); });
 
 $("inNote").addEventListener("input", () => { current.note = $("inNote").value; save(); });
 
