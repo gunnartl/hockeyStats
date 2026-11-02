@@ -72,6 +72,28 @@
   .log .t { font-variant-numeric: tabular-nums; min-width: 92px; }
   .log .who { flex: 1; overflow-wrap: anywhere; }
   .log .x { padding: 4px 10px; background: transparent; color: var(--muted); font-size: 20px; }
+  /* Analysis */
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: 180px; touch-action: pan-y; }
+  .chart .axis { fill: var(--muted); font-size: 11px; }
+  .chart .grid { stroke: var(--card2); stroke-width: 1; }
+  .charttitle { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0 6px; }
+  .charttitle .muted { font-size: 14px; }
+  .tip { position: absolute; top: 0; pointer-events: none; background: #000d; color: #fff; font-size: 13px;
+    padding: 6px 10px; border-radius: 8px; white-space: nowrap; transform: translateX(-50%); z-index: 2; }
+  .range { position: relative; height: 36px; margin: 6px 4px; }
+  .range .track { position: absolute; left: 0; right: 0; top: 16px; height: 4px; border-radius: 2px; background: var(--card2); }
+  .range .fill { position: absolute; top: 16px; height: 4px; border-radius: 2px; background: var(--accent); }
+  .range input { position: absolute; left: 0; top: 0; width: 100%; height: 36px; margin: 0; background: none;
+    pointer-events: none; -webkit-appearance: none; appearance: none; border: 0; padding: 0; }
+  .range input::-webkit-slider-runnable-track { background: none; height: 36px; }
+  .range input::-moz-range-track { background: none; }
+  .range input::-webkit-slider-thumb { -webkit-appearance: none; pointer-events: auto; width: 28px; height: 28px;
+    margin-top: 4px; border-radius: 50%; background: var(--accent); border: 3px solid var(--bg); cursor: pointer; }
+  .range input::-moz-range-thumb { pointer-events: auto; width: 24px; height: 24px; border-radius: 50%;
+    background: var(--accent); border: 3px solid var(--bg); cursor: pointer; }
+  .rangelabels { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+  .rangelabels div:last-child { text-align: right; }
   .toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); transform: translateX(-50%);
     background: #000c; padding: 10px 18px; border-radius: 99px; font-size: 15px; pointer-events: none;
     transition: opacity .3s; opacity: 0; }
@@ -84,6 +106,7 @@
 <section id="home">
   <h1>🏒 Hockey Stats</h1>
   <button class="primary full" id="btnNew">+ New match</button>
+  <button class="full" id="btnAnalysis" style="margin-top:10px">📊 Analysis</button>
   <h2>Matches</h2>
   <div id="matchList"></div>
   <button class="ghost full" id="btnExport" style="margin-top:16px">Export all as CSV</button>
@@ -117,7 +140,7 @@
 
   <div id="readyControls">
     <p class="muted" style="text-align:center" id="readyInfo"></p>
-    <button class="primary full" id="btnStart" style="padding:22px;font-size:20px">▶ Start match</button>
+    <button class="full" id="btnStart" style="padding:22px;font-size:20px;background:var(--us);color:#fff;font-weight:700">▶ Start match</button>
   </div>
 
   <div id="liveControls">
@@ -144,6 +167,31 @@
 
   <button class="primary full" id="btnSaveExit" style="margin-top:24px">✓ Save and exit</button>
   <button class="danger full hidden" id="btnDelete" style="margin-top:32px">Delete this match</button>
+</section>
+
+<!-- ANALYSIS -->
+<section id="analysis" class="hidden">
+  <div class="topbar"><h1>Analysis</h1><button class="small ghost" data-go="home">‹ Matches</button></div>
+  <p class="muted" id="aSummary" style="margin-top:0"></p>
+  <div id="aCharts">
+    <div class="card">
+      <div class="charttitle"><b>Goals scored</b><span class="muted">avg per match, per minute</span></div>
+      <div class="chart" id="chartUs"></div>
+    </div>
+    <div class="card">
+      <div class="charttitle"><b>Goals conceded</b><span class="muted">avg per match, per minute</span></div>
+      <div class="chart" id="chartThem"></div>
+    </div>
+    <h2>Matches included</h2>
+    <div class="card">
+      <div class="range" id="range">
+        <div class="track"></div><div class="fill" id="rangeFill"></div>
+        <input type="range" id="rFrom" min="0" value="0" step="1" aria-label="First match">
+        <input type="range" id="rTo" min="0" value="0" step="1" aria-label="Last match">
+      </div>
+      <div class="rangelabels"><div id="lFrom"></div><div id="lTo"></div></div>
+    </div>
+  </div>
 </section>
 
 <div class="toast" id="toast"></div>
@@ -180,7 +228,7 @@ const when = (m) => m.startedAt || m.createdAt; // not-yet-started matches use t
 let current = null; // match being viewed
 let tick = null;
 function show(view) {
-  for (const id of ["home", "setup", "match"]) $(id).classList.toggle("hidden", id !== view);
+  for (const id of ["home", "setup", "match", "analysis"]) $(id).classList.toggle("hidden", id !== view);
   clearInterval(tick); tick = null;
   if (view === "home") { current = null; renderHome(); releaseWake(); }
   window.scrollTo(0, 0);
@@ -383,6 +431,109 @@ $("btnDelete").addEventListener("click", () => {
   db.matches = db.matches.filter((m) => m !== current);
   save(); show("home");
 });
+
+// ---------- analysis ----------
+let aMatches = []; // started matches, oldest first
+
+$("btnAnalysis").addEventListener("click", () => {
+  aMatches = db.matches.filter((m) => m.startedAt).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  show("analysis");
+  const n = aMatches.length;
+  $("aCharts").classList.toggle("hidden", !n);
+  if (!n) { $("aSummary").textContent = "No matches played yet."; return; }
+  for (const r of [$("rFrom"), $("rTo")]) { r.max = n - 1; r.disabled = n < 2; }
+  $("rFrom").value = 0; $("rTo").value = n - 1; // start with all matches
+  renderAnalysis();
+});
+for (const id of ["rFrom", "rTo"]) $(id).addEventListener("input", () => {
+  // keep the two handles from crossing
+  const f = $("rFrom"), t = $("rTo");
+  if (+f.value > +t.value) (id === "rFrom" ? t : f).value = $(id).value;
+  renderAnalysis();
+});
+window.addEventListener("resize", () => { if (!$("analysis").classList.contains("hidden") && aMatches.length) renderAnalysis(); });
+
+function renderAnalysis() {
+  const from = +$("rFrom").value, to = +$("rTo").value, n = aMatches.length;
+  const sel = aMatches.slice(from, to + 1);
+  const label = (m) => `${localDate(m.startedAt)}<br><span class="muted"></span>`;
+  for (const [el, m] of [[$("lFrom"), sel[0]], [$("lTo"), sel[sel.length - 1]]]) {
+    el.innerHTML = label(m); el.querySelector("span").textContent = "vs " + m.opponent;
+  }
+  const pct = (i) => (n < 2 ? 0 : (i / (n - 1)) * 100);
+  $("rangeFill").style.left = pct(from) + "%";
+  $("rangeFill").style.width = (pct(to) - pct(from)) + "%";
+
+  // One column per minute of each period; periods/length taken from the selected matches.
+  const periods = Math.max(3, ...sel.map((m) => m.periods));
+  const minutes = Math.max(...sel.map((m) => m.periodMinutes));
+  const bins = { us: [], them: [] };
+  for (const t in bins) for (let p = 0; p < periods; p++) bins[t].push(new Array(minutes).fill(0));
+  let tot = { us: 0, them: 0 };
+  for (const m of sel) for (const g of m.goals) {
+    const min = Math.min(minutes - 1, Math.floor(g.periodMs / 60000));
+    bins[g.team][g.period - 1][min]++;
+    tot[g.team]++;
+  }
+  $("aSummary").textContent = `${sel.length} match${sel.length === 1 ? "" : "es"} · scored ${tot.us} · conceded ${tot.them}`;
+  const avg = (t) => bins[t].map((row) => row.map((c) => c / sel.length));
+  const a = { us: avg("us"), them: avg("them") };
+  // Shared y scale so the two charts can be compared directly.
+  const max = Math.max(0, ...a.us.flat(), ...a.them.flat());
+  const yMax = niceMax(max);
+  drawHist($("chartUs"), a.us, bins.us, "var(--us)", yMax, sel.length);
+  drawHist($("chartThem"), a.them, bins.them, "var(--them)", yMax, sel.length);
+}
+
+function niceMax(v) {
+  if (v <= 0) return 1;
+  for (const step of [0.1, 0.2, 0.25, 0.5, 1, 2, 5]) if (v <= step * 4) return Math.ceil(v / step) * step;
+  return Math.ceil(v);
+}
+
+function drawHist(box, avg, counts, color, yMax, nMatches) {
+  const W = box.clientWidth || 320, H = 180, L = 30, R = 2, T = 8, B = 22, gapP = 8;
+  const P = avg.length, M = avg[0].length;
+  const colW = (W - L - R - gapP * (P - 1)) / (P * M);
+  const y = (v) => T + (H - T - B) * (1 - v / yMax);
+  const fmtN = (v) => (Math.round(v * 100) / 100).toString();
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img">`;
+  for (const v of [0, yMax / 2, yMax]) {
+    svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/>`;
+    svg += `<text class="axis" x="${L - 5}" y="${y(v) + 4}" text-anchor="end">${fmtN(v)}</text>`;
+  }
+  const cols = [];
+  for (let p = 0; p < P; p++) {
+    const x0 = L + p * (M * colW + gapP);
+    svg += `<text class="axis" x="${x0 + (M * colW) / 2}" y="${H - 6}" text-anchor="middle">P${p + 1}</text>`;
+    for (let i = 0; i < M; i++) {
+      const v = avg[p][i], x = x0 + i * colW, w = Math.max(1, colW - 2);
+      if (v > 0) {
+        const top = y(v), base = y(0), r = Math.min(4, w / 2, base - top);
+        svg += `<path fill="${color}" d="M${x},${base}V${top + r}Q${x},${top} ${x + r},${top}H${x + w - r}Q${x + w},${top} ${x + w},${top + r}V${base}Z"/>`;
+      }
+      cols.push({ x, w: colW, p, i, v, c: counts[p][i] });
+    }
+  }
+  svg += `</svg><div class="tip hidden"></div>`;
+  box.innerHTML = svg;
+
+  // Tap / hover a column to see its numbers.
+  const tip = box.querySelector(".tip"), el = box.querySelector("svg");
+  const pick = (e) => {
+    const rect = el.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    const col = cols.find((c) => px >= c.x && px < c.x + c.w + (c.i === M - 1 ? gapP : 0));
+    if (!col) return tip.classList.add("hidden");
+    tip.innerHTML = `<b>P${col.p + 1} · ${col.i}–${col.i + 1} min</b><br>${fmtN(col.v)} per match · ${col.c} goal${col.c === 1 ? "" : "s"} in ${nMatches}`;
+    tip.classList.remove("hidden");
+    const left = ((col.x + col.w / 2) / W) * rect.width;
+    tip.style.left = Math.min(rect.width - tip.offsetWidth / 2, Math.max(tip.offsetWidth / 2, left)) + "px";
+  };
+  el.addEventListener("pointerdown", pick);
+  el.addEventListener("pointermove", pick);
+  el.addEventListener("pointerleave", () => tip.classList.add("hidden"));
+}
 
 // ---------- CSV export ----------
 function csvCell(v) { v = v == null ? "" : String(v); return /[",\n;]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
