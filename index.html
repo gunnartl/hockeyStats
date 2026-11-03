@@ -129,8 +129,10 @@
   <input id="inOurs" autocomplete="off" placeholder="Us">
   <label for="inOpp">Opposing team</label>
   <input id="inOpp" autocomplete="off" placeholder="e.g. Furuset">
-  <label for="inDate">Date</label>
-  <input id="inDate" type="date">
+  <div class="row">
+    <div><label for="inDate">Date</label><input id="inDate" type="date"></div>
+    <div><label for="inTime">Start time</label><input id="inTime" type="time"></div>
+  </div>
   <div class="row">
     <div><label for="inPeriods">Periods</label><input id="inPeriods" type="number" inputmode="numeric" min="1" max="9" value="3"></div>
     <div><label for="inMinutes">Minutes each</label><input id="inMinutes" type="number" inputmode="numeric" min="1" max="90" value="15"></div>
@@ -253,7 +255,7 @@ function matchMs(m) { return m.periodDurations.reduce((a, b) => a + b, 0) + peri
 const score = (m, team) => m.goals.filter((g) => g.team === team).length;
 const periodName = (m, p) => "P" + p;
 // not-yet-started matches use the chosen match day (older matches: the creation time)
-const when = (m) => m.startedAt || (m.date ? m.date + "T12:00:00" : m.createdAt);
+const when = (m) => m.startedAt || (m.date ? new Date(`${m.date}T${m.time || "12:00"}:00`).toISOString() : m.createdAt);
 
 // ---------- navigation ----------
 let current = null; // match being viewed
@@ -276,7 +278,7 @@ function renderHome() {
     const el = document.createElement("div");
     el.className = "card match";
     el.innerHTML = `<div><div><b></b>${m.status === "live" ? '<span class="badge">LIVE</span>' : m.status === "ready" ? '<span class="badge">NOT STARTED</span>' : ""}</div>
-      <div class="muted">${localDate(when(m))} · ${m.startedAt ? localTime(m.startedAt).slice(0, 5) : "—"}</div></div>
+      <div class="muted">${localDate(when(m))} · ${m.startedAt ? localTime(m.startedAt).slice(0, 5) : m.time || "—"}</div></div>
       <div class="score">${score(m, "us")} – ${score(m, "them")}</div>`;
     el.querySelector("b").textContent = "vs " + m.opponent;
     el.addEventListener("click", () => openMatch(m.id));
@@ -290,7 +292,9 @@ $("btnNew").addEventListener("click", () => {
   if (live) endMatch(live);
   $("inOurs").value = db.ourTeam || "";
   $("inOpp").value = "";
-  $("inDate").value = localDate(new Date().toISOString()); // default today; pick an earlier day to log an old match
+  const nowIso = new Date().toISOString();
+  $("inDate").value = localDate(nowIso); // default today; pick an earlier day to log an old match
+  $("inTime").value = localTime(nowIso).slice(0, 5); // default now
   show("setup");
   $("inOpp").focus();
 });
@@ -306,6 +310,7 @@ $("btnCreate").addEventListener("click", () => {
     ourTeam, opponent,
     createdAt: new Date(now).toISOString(),
     date: $("inDate").value || localDate(new Date(now).toISOString()), // match day, YYYY-MM-DD
+    time: $("inTime").value || localTime(new Date(now).toISOString()).slice(0, 5), // start time, HH:MM
     startedAt: null,              // set when "Start match" is pressed
     endedAt: null,
     periods: Math.max(1, parseInt($("inPeriods").value, 10) || 3),
@@ -334,7 +339,7 @@ function openMatch(id) {
 
 function renderMatch() {
   const m = current;
-  $("mDate").textContent = localDate(when(m)) + (m.startedAt ? " " + localTime(m.startedAt).slice(0, 5) : "");
+  $("mDate").textContent = localDate(when(m)) + (m.startedAt ? " " + localTime(m.startedAt).slice(0, 5) : m.time ? " " + m.time : "");
   if (document.activeElement !== $("inNote")) $("inNote").value = m.note || "";
   $("nUs").textContent = $("gUsName").textContent = m.ourTeam;
   $("nThem").textContent = $("gThemName").textContent = m.opponent;
@@ -447,9 +452,10 @@ $("btnPeriod").addEventListener("click", () => {
 $("btnStart").addEventListener("click", () => {
   const m = current;
   const now = Date.now();
-  // Start time = the chosen match day at the current time of day (so old matches sort and show on their own date).
+  // Start time = the chosen match day and start time (so old matches sort and show on their own date and time).
   const start = new Date(now);
   if (m.date) { const [y, mo, d] = m.date.split("-").map(Number); start.setFullYear(y, mo - 1, d); }
+  if (m.time) { const [h, mi] = m.time.split(":").map(Number); start.setHours(h, mi, 0, 0); }
   m.startedAt = start.toISOString();
   m.status = "live";
   m.clock = { acc: 0, runningSince: now };
