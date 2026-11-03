@@ -83,6 +83,9 @@
     padding: 6px 10px; border-radius: 8px; white-space: nowrap; transform: translateX(-50%); z-index: 2; }
   .seg { display: flex; gap: 6px; margin-bottom: 10px; }
   .seg button { flex: 1; padding: 10px; font-size: 15px; }
+  .legend { display: flex; gap: 16px; font-size: 14px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+  .chart .guide { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
   .seglabel { font-size: 13px; margin: 0 0 4px; }
   .seg button.on { background: var(--accent); color: #1a1a1a; font-weight: 700; }
   .range { position: relative; height: 36px; margin: 6px 4px; }
@@ -187,13 +190,18 @@
         <button data-size="1" class="on">1 min</button><button data-size="3">3 min</button><button data-size="5">5 min</button>
       </div>
     </div>
-    <div class="card">
+    <div class="card histCard">
       <div class="charttitle"><b>Goals scored</b><span class="muted binLabel">avg per match, per minute</span></div>
       <div class="chart" id="chartUs"></div>
     </div>
-    <div class="card">
+    <div class="card histCard">
       <div class="charttitle"><b>Goals conceded</b><span class="muted binLabel">avg per match, per minute</span></div>
       <div class="chart" id="chartThem"></div>
+    </div>
+    <div class="card hidden" id="cumCard">
+      <div class="charttitle"><b>Goals over the match</b><span class="muted">avg per match, running total</span></div>
+      <div class="chart" id="chartCum"></div>
+      <div class="legend"><span><i style="background:var(--us)"></i>Scored</span><span><i style="background:var(--them)"></i>Conceded</span></div>
     </div>
     <h2>Matches included</h2>
     <div class="card">
@@ -456,6 +464,8 @@ $("aMode").addEventListener("click", (e) => {
   cumulative = b.dataset.mode === "cum";
   for (const x of $("aMode").children) x.classList.toggle("on", x === b);
   $("binWrap").classList.toggle("hidden", cumulative);
+  document.querySelectorAll(".histCard").forEach((c) => c.classList.toggle("hidden", cumulative));
+  $("cumCard").classList.toggle("hidden", !cumulative);
   renderAnalysis();
 });
 
@@ -499,30 +509,80 @@ function renderAnalysis() {
   // One column per binSize minutes of each period; periods/length taken from the selected matches.
   const periods = Math.max(3, ...sel.map((m) => m.periods));
   const minutes = Math.max(...sel.map((m) => m.periodMinutes));
-  const size = cumulative ? 1 : binSize; // cumulative always uses 1-minute steps
-  const nBins = Math.ceil(minutes / size);
+  const nBins = Math.ceil(minutes / binSize);
   const bins = { us: [], them: [] };
   for (const t in bins) for (let p = 0; p < periods; p++) bins[t].push(new Array(nBins).fill(0));
   let tot = { us: 0, them: 0 };
   for (const m of sel) for (const g of m.goals) {
     const min = Math.min(minutes - 1, Math.floor(g.periodMs / 60000));
-    bins[g.team][g.period - 1][Math.floor(min / size)]++;
+    bins[g.team][g.period - 1][Math.floor(min / binSize)]++;
     tot[g.team]++;
   }
-  if (cumulative) for (const t in bins) {
-    // running total through the whole match, carrying over from one period to the next
-    let run = 0;
-    for (const row of bins[t]) for (let i = 0; i < row.length; i++) row[i] = run += row[i];
-  }
   $("aSummary").textContent = `${sel.length} match${sel.length === 1 ? "" : "es"} · scored ${tot.us} · conceded ${tot.them}`;
+  if (cumulative) return drawCum($("chartCum"), sel, periods, minutes);
   const avg = (t) => bins[t].map((row) => row.map((c) => c / sel.length));
   const a = { us: avg("us"), them: avg("them") };
   // Shared y scale so the two charts can be compared directly.
   const max = Math.max(0, ...a.us.flat(), ...a.them.flat());
   const yMax = niceMax(max);
-  document.querySelectorAll(".binLabel").forEach((e) => (e.textContent = cumulative ? "avg per match, running total" : binSize === 1 ? "avg per match, per minute" : `avg per match, per ${binSize} min`));
+  document.querySelectorAll(".binLabel").forEach((e) => (e.textContent = binSize === 1 ? "avg per match, per minute" : `avg per match, per ${binSize} min`));
   drawHist($("chartUs"), a.us, bins.us, "var(--us)", yMax, sel.length, minutes);
   drawHist($("chartThem"), a.them, bins.them, "var(--them)", yMax, sel.length, minutes);
+}
+
+// One line per team: steps up by 1/n (n = matches) at the exact time each goal was logged in its period.
+function drawCum(box, sel, P, minutes) {
+  const W = box.clientWidth || 320, H = 180, L = 30, R = 2, T = 8, B = 22, gapP = 8;
+  const n = sel.length, step = 1 / n, perMs = minutes * 60000;
+  const segW = (W - L - R - gapP * (P - 1)) / P;
+  const x = (p, ms) => L + p * (segW + gapP) + (segW * ms) / perMs;
+  const goals = { us: [], them: [] };
+  for (const m of sel) for (const g of m.goals) if (g.period <= P)
+    goals[g.team].push({ p: g.period - 1, ms: Math.min(perMs, Math.max(0, g.periodMs)) });
+  for (const t in goals) goals[t].sort((a, b) => a.p - b.p || a.ms - b.ms);
+  const yMax = niceMax(Math.max(goals.us.length, goals.them.length) / n);
+  const y = (v) => T + (H - T - B) * (1 - v / yMax);
+  const fmtN = (v) => (Math.round(v * 100) / 100).toString();
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img">`;
+  for (const v of [0, yMax / 2, yMax]) {
+    svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/>`;
+    svg += `<text class="axis" x="${L - 5}" y="${y(v) + 4}" text-anchor="end">${fmtN(v)}</text>`;
+  }
+  for (let p = 0; p < P; p++)
+    svg += `<text class="axis" x="${x(p, perMs / 2)}" y="${H - 6}" text-anchor="middle">P${p + 1}</text>`;
+  for (const [t, color] of [["them", "var(--them)"], ["us", "var(--us)"]]) {
+    let v = 0, d = "", k = 0;
+    for (let p = 0; p < P; p++) {
+      d += `M${x(p, 0)},${y(v)}`; // break the line across the gap between periods
+      for (; k < goals[t].length && goals[t][k].p === p; k++) { d += `H${x(p, goals[t][k].ms)}`; v += step; d += `V${y(v)}`; }
+      d += `H${x(p, perMs)}`;
+    }
+    svg += `<path d="${d}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>`;
+  }
+  svg += `<line class="guide" y1="${T}" y2="${H - B}" visibility="hidden"/></svg><div class="tip hidden"></div>`;
+  box.innerHTML = svg;
+
+  // Tap / hover to read both running totals at that moment.
+  const tip = box.querySelector(".tip"), el = box.querySelector("svg"), guide = box.querySelector(".guide");
+  const upTo = (t, p, ms) => goals[t].filter((g) => g.p < p || (g.p === p && g.ms <= ms)).length;
+  const hide = () => { tip.classList.add("hidden"); guide.setAttribute("visibility", "hidden"); };
+  const pick = (e) => {
+    const rect = el.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    if (px < L || px > W - R) return hide();
+    const p = Math.min(P - 1, Math.floor((px - L) / (segW + gapP)));
+    const ms = Math.min(perMs, Math.max(0, ((px - L - p * (segW + gapP)) / segW) * perMs));
+    const us = upTo("us", p, ms), them = upTo("them", p, ms);
+    tip.innerHTML = `<b>P${p + 1} · ${fmt(ms)}</b><br>Scored ${fmtN(us / n)} · conceded ${fmtN(them / n)} per match<br><span class="muted">${us}–${them} total in ${n}</span>`;
+    tip.classList.remove("hidden");
+    const gx = x(p, ms);
+    guide.setAttribute("x1", gx); guide.setAttribute("x2", gx); guide.setAttribute("visibility", "visible");
+    const left = (gx / W) * rect.width;
+    tip.style.left = Math.min(rect.width - tip.offsetWidth / 2, Math.max(tip.offsetWidth / 2, left)) + "px";
+  };
+  el.addEventListener("pointerdown", pick);
+  el.addEventListener("pointermove", pick);
+  el.addEventListener("pointerleave", hide);
 }
 
 function niceMax(v) {
@@ -565,10 +625,7 @@ function drawHist(box, avg, counts, color, yMax, nMatches, minutes) {
     const px = ((e.clientX - rect.left) / rect.width) * W;
     const col = cols.find((c) => px >= c.x && px < c.x + c.w + (c.i === M - 1 ? gapP : 0));
     if (!col) return tip.classList.add("hidden");
-    const end = Math.min(minutes, (col.i + 1) * (cumulative ? 1 : binSize));
-    tip.innerHTML = cumulative
-      ? `<b>By P${col.p + 1} · ${end} min</b><br>${fmtN(col.v)} per match · ${col.c} goal${col.c === 1 ? "" : "s"} in ${nMatches}`
-      : `<b>P${col.p + 1} · ${col.i * binSize}–${end} min</b><br>${fmtN(col.v)} per match · ${col.c} goal${col.c === 1 ? "" : "s"} in ${nMatches}`;
+    tip.innerHTML = `<b>P${col.p + 1} · ${col.i * binSize}–${Math.min(minutes, (col.i + 1) * binSize)} min</b><br>${fmtN(col.v)} per match · ${col.c} goal${col.c === 1 ? "" : "s"} in ${nMatches}`;
     tip.classList.remove("hidden");
     const left = ((col.x + col.w / 2) / W) * rect.width;
     tip.style.left = Math.min(rect.width - tip.offsetWidth / 2, Math.max(tip.offsetWidth / 2, left)) + "px";
