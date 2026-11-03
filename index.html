@@ -83,6 +83,7 @@
     padding: 6px 10px; border-radius: 8px; white-space: nowrap; transform: translateX(-50%); z-index: 2; }
   .seg { display: flex; gap: 6px; margin-bottom: 10px; }
   .seg button { flex: 1; padding: 10px; font-size: 15px; }
+  .seglabel { font-size: 13px; margin: 0 0 4px; }
   .seg button.on { background: var(--accent); color: #1a1a1a; font-weight: 700; }
   .range { position: relative; height: 36px; margin: 6px 4px; }
   .range .track { position: absolute; left: 0; right: 0; top: 16px; height: 4px; border-radius: 2px; background: var(--card2); }
@@ -177,8 +178,14 @@
   <div class="topbar"><h1>Analysis</h1><button class="small ghost" data-go="home">‹ Matches</button></div>
   <p class="muted" id="aSummary" style="margin-top:0"></p>
   <div id="aCharts">
-    <div class="seg" id="binSize">
-      <button data-size="1" class="on">1 min</button><button data-size="3">3 min</button><button data-size="5">5 min</button>
+    <div class="seg" id="aMode">
+      <button data-mode="interval" class="on">Per interval</button><button data-mode="cum">Cumulative</button>
+    </div>
+    <div id="binWrap">
+      <div class="muted seglabel">Bin size</div>
+      <div class="seg" id="binSize">
+        <button data-size="1" class="on">1 min</button><button data-size="3">3 min</button><button data-size="5">5 min</button>
+      </div>
     </div>
     <div class="card">
       <div class="charttitle"><b>Goals scored</b><span class="muted binLabel">avg per match, per minute</span></div>
@@ -441,6 +448,16 @@ $("btnDelete").addEventListener("click", () => {
 // ---------- analysis ----------
 let aMatches = []; // started matches, oldest first
 let binSize = 1;    // minutes per column
+let cumulative = false; // running total over the match instead of goals per interval
+
+$("aMode").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  cumulative = b.dataset.mode === "cum";
+  for (const x of $("aMode").children) x.classList.toggle("on", x === b);
+  $("binWrap").classList.toggle("hidden", cumulative);
+  renderAnalysis();
+});
 
 $("binSize").addEventListener("click", (e) => {
   const b = e.target.closest("button");
@@ -482,14 +499,20 @@ function renderAnalysis() {
   // One column per binSize minutes of each period; periods/length taken from the selected matches.
   const periods = Math.max(3, ...sel.map((m) => m.periods));
   const minutes = Math.max(...sel.map((m) => m.periodMinutes));
-  const nBins = Math.ceil(minutes / binSize);
+  const size = cumulative ? 1 : binSize; // cumulative always uses 1-minute steps
+  const nBins = Math.ceil(minutes / size);
   const bins = { us: [], them: [] };
   for (const t in bins) for (let p = 0; p < periods; p++) bins[t].push(new Array(nBins).fill(0));
   let tot = { us: 0, them: 0 };
   for (const m of sel) for (const g of m.goals) {
     const min = Math.min(minutes - 1, Math.floor(g.periodMs / 60000));
-    bins[g.team][g.period - 1][Math.floor(min / binSize)]++;
+    bins[g.team][g.period - 1][Math.floor(min / size)]++;
     tot[g.team]++;
+  }
+  if (cumulative) for (const t in bins) {
+    // running total through the whole match, carrying over from one period to the next
+    let run = 0;
+    for (const row of bins[t]) for (let i = 0; i < row.length; i++) row[i] = run += row[i];
   }
   $("aSummary").textContent = `${sel.length} match${sel.length === 1 ? "" : "es"} · scored ${tot.us} · conceded ${tot.them}`;
   const avg = (t) => bins[t].map((row) => row.map((c) => c / sel.length));
@@ -497,7 +520,7 @@ function renderAnalysis() {
   // Shared y scale so the two charts can be compared directly.
   const max = Math.max(0, ...a.us.flat(), ...a.them.flat());
   const yMax = niceMax(max);
-  document.querySelectorAll(".binLabel").forEach((e) => (e.textContent = binSize === 1 ? "avg per match, per minute" : `avg per match, per ${binSize} min`));
+  document.querySelectorAll(".binLabel").forEach((e) => (e.textContent = cumulative ? "avg per match, running total" : binSize === 1 ? "avg per match, per minute" : `avg per match, per ${binSize} min`));
   drawHist($("chartUs"), a.us, bins.us, "var(--us)", yMax, sel.length, minutes);
   drawHist($("chartThem"), a.them, bins.them, "var(--them)", yMax, sel.length, minutes);
 }
@@ -542,7 +565,10 @@ function drawHist(box, avg, counts, color, yMax, nMatches, minutes) {
     const px = ((e.clientX - rect.left) / rect.width) * W;
     const col = cols.find((c) => px >= c.x && px < c.x + c.w + (c.i === M - 1 ? gapP : 0));
     if (!col) return tip.classList.add("hidden");
-    tip.innerHTML = `<b>P${col.p + 1} · ${col.i * binSize}–${Math.min(minutes, (col.i + 1) * binSize)} min</b><br>${fmtN(col.v)} per match · ${col.c} goal${col.c === 1 ? "" : "s"} in ${nMatches}`;
+    const end = Math.min(minutes, (col.i + 1) * (cumulative ? 1 : binSize));
+    tip.innerHTML = cumulative
+      ? `<b>By P${col.p + 1} · ${end} min</b><br>${fmtN(col.v)} per match · ${col.c} goal${col.c === 1 ? "" : "s"} in ${nMatches}`
+      : `<b>P${col.p + 1} · ${col.i * binSize}–${end} min</b><br>${fmtN(col.v)} per match · ${col.c} goal${col.c === 1 ? "" : "s"} in ${nMatches}`;
     tip.classList.remove("hidden");
     const left = ((col.x + col.w / 2) / W) * rect.width;
     tip.style.left = Math.min(rect.width - tip.offsetWidth / 2, Math.max(tip.offsetWidth / 2, left)) + "px";
