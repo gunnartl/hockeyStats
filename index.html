@@ -58,6 +58,9 @@
   .clockbox { text-align: center; margin: 14px 0; }
   .period { font-size: 16px; color: var(--muted); }
   .clock { font-size: 64px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .clockrow { display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .clockrow .nudge { min-width: 62px; }
+  .clockrow .nudge:disabled { opacity: .35; }
   .clock.paused { color: var(--muted); }
   .clock.over { color: var(--accent); }
   .goalbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
@@ -126,6 +129,8 @@
   <input id="inOurs" autocomplete="off" placeholder="Us">
   <label for="inOpp">Opposing team</label>
   <input id="inOpp" autocomplete="off" placeholder="e.g. Furuset">
+  <label for="inDate">Date</label>
+  <input id="inDate" type="date">
   <div class="row">
     <div><label for="inPeriods">Periods</label><input id="inPeriods" type="number" inputmode="numeric" min="1" max="9" value="3"></div>
     <div><label for="inMinutes">Minutes each</label><input id="inMinutes" type="number" inputmode="numeric" min="1" max="90" value="15"></div>
@@ -153,7 +158,11 @@
   <div id="liveControls">
     <div class="clockbox">
       <div class="period" id="periodLabel"></div>
-      <div class="clock" id="clock">00:00</div>
+      <div class="clockrow">
+        <button class="small ghost nudge" data-nudge="-5000" aria-label="Take 5 seconds off the clock">−5 s</button>
+        <div class="clock" id="clock">00:00</div>
+        <button class="small ghost nudge" data-nudge="5000" aria-label="Add 5 seconds to the clock">+5 s</button>
+      </div>
     </div>
     <div class="goalbtns">
       <button class="us" id="goalUs">GOAL<br><small id="gUsName"></small></button>
@@ -243,7 +252,8 @@ function periodMs(m) { return Math.min(periodLen(m), m.clock.acc + (m.clock.runn
 function matchMs(m) { return m.periodDurations.reduce((a, b) => a + b, 0) + periodMs(m); }
 const score = (m, team) => m.goals.filter((g) => g.team === team).length;
 const periodName = (m, p) => "P" + p;
-const when = (m) => m.startedAt || m.createdAt; // not-yet-started matches use the creation time
+// not-yet-started matches use the chosen match day (older matches: the creation time)
+const when = (m) => m.startedAt || (m.date ? m.date + "T12:00:00" : m.createdAt);
 
 // ---------- navigation ----------
 let current = null; // match being viewed
@@ -280,6 +290,7 @@ $("btnNew").addEventListener("click", () => {
   if (live) endMatch(live);
   $("inOurs").value = db.ourTeam || "";
   $("inOpp").value = "";
+  $("inDate").value = localDate(new Date().toISOString()); // default today; pick an earlier day to log an old match
   show("setup");
   $("inOpp").focus();
 });
@@ -294,6 +305,7 @@ $("btnCreate").addEventListener("click", () => {
     id: String(now),
     ourTeam, opponent,
     createdAt: new Date(now).toISOString(),
+    date: $("inDate").value || localDate(new Date(now).toISOString()), // match day, YYYY-MM-DD
     startedAt: null,              // set when "Start match" is pressed
     endedAt: null,
     periods: Math.max(1, parseInt($("inPeriods").value, 10) || 3),
@@ -340,6 +352,7 @@ function renderMatch() {
     $("btnPause").disabled = m.between || periodMs(m) >= periodLen(m);
     $("btnPause").textContent = m.clock.runningSince ? "Pause" : "Resume";
     $("goalUs").disabled = $("goalThem").disabled = m.between;
+    document.querySelectorAll(".nudge").forEach((b) => (b.disabled = m.between));
     renderClock();
   }
   const log = $("goalLog");
@@ -402,6 +415,18 @@ $("btnPause").addEventListener("click", () => {
   save(); renderMatch();
 });
 
+// −5 s / +5 s change the time shown on the (countdown) clock, to catch up with the real match clock.
+// Works whether the clock is running or paused; goals already logged keep their times.
+document.querySelectorAll(".nudge").forEach((b) => b.addEventListener("click", () => {
+  const m = current;
+  if (!m || m.status !== "live" || m.between) return;
+  const cur = periodMs(m);
+  const next = Math.min(periodLen(m), Math.max(0, cur - Number(b.dataset.nudge))); // more time left = less played
+  m.clock.acc += next - cur;
+  if (next >= periodLen(m) && m.clock.runningSince) m.clock = { acc: periodLen(m), runningSince: null };
+  save(); renderMatch();
+}));
+
 $("btnPeriod").addEventListener("click", () => {
   const m = current;
   if (m.between) { // start next period
@@ -422,7 +447,10 @@ $("btnPeriod").addEventListener("click", () => {
 $("btnStart").addEventListener("click", () => {
   const m = current;
   const now = Date.now();
-  m.startedAt = new Date(now).toISOString();
+  // Start time = the chosen match day at the current time of day (so old matches sort and show on their own date).
+  const start = new Date(now);
+  if (m.date) { const [y, mo, d] = m.date.split("-").map(Number); start.setFullYear(y, mo - 1, d); }
+  m.startedAt = start.toISOString();
   m.status = "live";
   m.clock = { acc: 0, runningSince: now };
   save();
